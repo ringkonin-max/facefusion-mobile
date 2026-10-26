@@ -175,7 +175,7 @@ jobs:
         working-directory: work/android
         run: |
           ./gradlew :app:assembleDebug \
-            -PprebuiltNativeDir=../../prebuilt \
+            -PprebuiltNativeDir="${GITHUB_WORKSPACE}/prebuilt" \
             --no-daemon \
             --stacktrace \
             2>&1 | tee ../../build.log
@@ -204,4 +204,3 @@ jobs:
           name: build-log-run${{ github.run_number }}
           path: build.log
           retention-days: 7
-

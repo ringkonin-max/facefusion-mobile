@@ -5,7 +5,9 @@
 #
 # Strategy
 # --------
-# 1. Checks out this fork at a pinned upstream commit.
+# 1. Checks out the fork's main branch (which is based on the pinned upstream
+#    commit plus the .github/ additions). Verifies the pinned commit is in
+#    the ancestry so we know which upstream source we're building against.
 # 2. Applies .github/patches/content-mod.patch — fails loudly with a
 #    clear message if the source has changed since the pin.
 # 3. Downloads the matching upstream release APK and splits its native
@@ -43,19 +45,20 @@ jobs:
     steps:
 
       # ── 1. Source ──────────────────────────────────────────────────────────
-      - name: Check out at pinned upstream commit
+      # Check out the fork's main branch so .github/patches/ is available.
+      # The fork's main is the pinned upstream commit + the .github/ additions;
+      # all source files being patched are identical to the pinned commit.
+      - name: Check out fork main branch
         uses: actions/checkout@v4
-        with:
-          ref: ${{ env.PINNED_COMMIT }}
 
-      - name: Verify commit pin
+      - name: Verify pinned commit is in ancestry
         run: |
-          ACTUAL=$(git rev-parse HEAD)
-          if [ "$ACTUAL" != "${{ env.PINNED_COMMIT }}" ]; then
-            echo "ERROR: HEAD is $ACTUAL, expected ${{ env.PINNED_COMMIT }}"
+          if ! git merge-base --is-ancestor "${{ env.PINNED_COMMIT }}" HEAD; then
+            echo "ERROR: ${{ env.PINNED_COMMIT }} not in ancestry of HEAD"
+            echo "Update PINNED_COMMIT and regenerate patch if upstream changed."
             exit 1
           fi
-          echo "Commit verified: $ACTUAL"
+          echo "Pinned commit verified in ancestry: ${{ env.PINNED_COMMIT }}"
 
       # ── 2. JDK ────────────────────────────────────────────────────────────
       - name: Set up JDK 17
@@ -68,6 +71,7 @@ jobs:
       # ── 3. Android SDK ─────────────────────────────────────────────────────
       - name: Install required Android SDK components
         run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
           # platform-35 and build-tools-34.0.0 match work/android/BUILDING.md.
           yes | sdkmanager "platforms;android-35" "build-tools;34.0.0" \
             2>/dev/null || true
@@ -209,4 +213,3 @@ jobs:
           name: build-log-run${{ github.run_number }}
           path: build.log
           retention-days: 7
-          

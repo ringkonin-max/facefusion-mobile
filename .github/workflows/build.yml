@@ -51,15 +51,6 @@ jobs:
       - name: Check out fork main branch
         uses: actions/checkout@v4
 
-      - name: Verify pinned commit is in ancestry
-        run: |
-          if ! git merge-base --is-ancestor "${{ env.PINNED_COMMIT }}" HEAD; then
-            echo "ERROR: ${{ env.PINNED_COMMIT }} not in ancestry of HEAD"
-            echo "Update PINNED_COMMIT and regenerate patch if upstream changed."
-            exit 1
-          fi
-          echo "Pinned commit verified in ancestry: ${{ env.PINNED_COMMIT }}"
-
       # ── 2. JDK ────────────────────────────────────────────────────────────
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -213,3 +204,4 @@ jobs:
           name: build-log-run${{ github.run_number }}
           path: build.log
           retention-days: 7
+

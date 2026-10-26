@@ -1,6 +1,9 @@
 diff --git a/work/android/app/build.gradle.kts b/work/android/app/build.gradle.kts
 index 0000000..0000000 100644
---- a/work/android/app/build.gradle.kts+++ b/work/android/app/build.gradle.kts@@ -29,7 +29,9 @@     if (f.exists()) f.inputStream().use { load(it) }
+--- a/work/android/app/build.gradle.kts
++++ b/work/android/app/build.gradle.kts
+@@ -29,7 +29,9 @@
+     if (f.exists()) f.inputStream().use { load(it) }
  }
  
 -val hasContentGate = file("src/main/java/com/facefusion/mobile/ContentGate.kt").exists()
@@ -13,7 +16,10 @@ index 0000000..0000000 100644
 
 diff --git a/work/android/app/src/main/java/com/facefusion/mobile/ContentGate.kt b/work/android/app/src/main/java/com/facefusion/mobile/ContentGate.kt
 index 0000000..0000000 100644
---- a/work/android/app/src/main/java/com/facefusion/mobile/ContentGate.kt+++ b/work/android/app/src/main/java/com/facefusion/mobile/ContentGate.kt@@ -1,245 +1,47 @@+// @stub — content gate removed in this build; all inspections return ALLOW.
+--- a/work/android/app/src/main/java/com/facefusion/mobile/ContentGate.kt
++++ b/work/android/app/src/main/java/com/facefusion/mobile/ContentGate.kt
+@@ -1,245 +1,47 @@
++// @stub — content gate removed in this build; all inspections return ALLOW.
 +// Original ContentGate.kt by AbrahamPaulJ/facefusion-mobile (MIT-ish wrapper;
 +// see README.md and docs/model-audit.md for upstream model licences).
 +// Upstream attribution, model licences and all other security checks are
@@ -275,3 +281,4 @@ index 0000000..0000000 100644
 -     */
      class Refused(message: String) : Exception(message)
  }
+

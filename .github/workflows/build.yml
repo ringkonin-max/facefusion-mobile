@@ -1,0 +1,212 @@
+# .github/workflows/build.yml
+#
+# Builds a modified debug APK of facefusion-mobile without requiring
+# a local computer, Android Studio, NDK SDK, or Qualcomm QNN SDK.
+#
+# Strategy
+# --------
+# 1. Checks out this fork at a pinned upstream commit.
+# 2. Applies .github/patches/content-mod.patch — fails loudly with a
+#    clear message if the source has changed since the pin.
+# 3. Downloads the matching upstream release APK and splits its native
+#    libraries into two locations:
+#      - prebuilt/arm64-v8a/   →  libffnative.so + libc++_shared.so
+#                                 (becomes jniLibs source via prebuiltNativeDir)
+#      - app/src/main/jniLibs/ →  all libQnn*.so runtime libraries
+#                                 (satisfies the qnnStage presence check)
+#    This avoids needing the Qualcomm SDK or a native compiler on the runner.
+# 4. Builds an arm64-v8a debug APK and uploads it as a workflow artifact.
+#
+# Attribution: based on AbrahamPaulJ/facefusion-mobile (see README.md).
+# Upstream models and pipeline are FaceFusion by Henry Ruhs.
+# Security model, licensing, and NSFW-gate logic are preserved per upstream.
+
+name: Build Modified Debug APK
+
+on:
+  workflow_dispatch:   # Launch manually from Actions tab
+
+env:
+  # Pin to the upstream commit this patch was written against.
+  # If upstream advances and you want to update, change this SHA,
+  # regenerate content-mod.patch against the new baseline, and update
+  # UPSTREAM_APK_URL + UPSTREAM_APK_MIN_BYTES to match.
+  PINNED_COMMIT:          afe1467e4c50c05c401283caedd3795d9d2d88d1
+  UPSTREAM_APK_URL:       https://github.com/AbrahamPaulJ/facefusion-mobile/releases/download/v0.9.41/facefusion-mobile-0.9.41-release.apk
+  # Sanity-check floor: reject downloads that are obviously truncated.
+  UPSTREAM_APK_MIN_BYTES: 65000000
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ── 1. Source ──────────────────────────────────────────────────────────
+      - name: Check out at pinned upstream commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PINNED_COMMIT }}
+
+      - name: Verify commit pin
+        run: |
+          ACTUAL=$(git rev-parse HEAD)
+          if [ "$ACTUAL" != "${{ env.PINNED_COMMIT }}" ]; then
+            echo "ERROR: HEAD is $ACTUAL, expected ${{ env.PINNED_COMMIT }}"
+            exit 1
+          fi
+          echo "Commit verified: $ACTUAL"
+
+      # ── 2. JDK ────────────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+
+      # ── 3. Android SDK ─────────────────────────────────────────────────────
+      - name: Install required Android SDK components
+        run: |
+          # platform-35 and build-tools-34.0.0 match work/android/BUILDING.md.
+          yes | sdkmanager "platforms;android-35" "build-tools;34.0.0" \
+            2>/dev/null || true
+          # NDK: needed only if AGP validates ndkVersion at configuration
+          # time even when externalNativeBuild is absent. Install it once
+          # so the build never stalls waiting for a download prompt.
+          NDK="27.2.12479018"
+          if [ ! -d "$ANDROID_HOME/ndk/$NDK" ]; then
+            echo "NDK $NDK not found; installing..."
+            sdkmanager "ndk;$NDK"
+          else
+            echo "NDK $NDK already present."
+          fi
+
+      # ── 4. Patch ───────────────────────────────────────────────────────────
+      # --check runs a dry-run first. If even one hunk fails the build stops
+      # here with a message identifying which file and context changed.
+      - name: Apply content-mod patch
+        run: |
+          if ! git apply --check .github/patches/content-mod.patch 2>&1; then
+            echo ""
+            echo "═══════════════════════════════════════════════════════════"
+            echo " PATCH FAILED — source no longer matches pinned commit."
+            echo " Update PINNED_COMMIT and regenerate content-mod.patch"
+            echo " against the new upstream baseline before rebuilding."
+            echo "═══════════════════════════════════════════════════════════"
+            exit 1
+          fi
+          git apply .github/patches/content-mod.patch
+          echo "Patch applied cleanly."
+
+      # ── 5. Download upstream release APK ───────────────────────────────────
+      - name: Download upstream v0.9.41 APK
+        run: |
+          curl -fL "${{ env.UPSTREAM_APK_URL }}" -o upstream.apk
+          BYTES=$(wc -c < upstream.apk)
+          echo "Downloaded: $BYTES bytes"
+          if [ "$BYTES" -lt "${{ env.UPSTREAM_APK_MIN_BYTES }}" ]; then
+            echo "ERROR: file too small ($BYTES bytes). Download may be truncated."
+            exit 1
+          fi
+
+      # ── 6. Extract and stage native libraries ──────────────────────────────
+      - name: Extract native libraries from upstream APK
+        run: |
+          # APK is a zip. Native libs live at lib/arm64-v8a/.
+          mkdir -p all_libs
+          unzip -jo upstream.apk 'lib/arm64-v8a/*' -d all_libs/
+          echo "--- all extracted libs ---"
+          ls -lh all_libs/
+          test -f all_libs/libffnative.so || {
+            echo "ERROR: libffnative.so missing from upstream APK"; exit 1
+          }
+
+      - name: Stage prebuiltNativeDir (compiled native + C++ runtime only)
+        run: |
+          # Gradle uses this directory as the jniLibs source when
+          # -PprebuiltNativeDir is passed, skipping the CMake/NDK build.
+          # It must contain arm64-v8a/libffnative.so (validated by Gradle).
+          # QNN runtime libs go to src/main/jniLibs instead (see next step)
+          # so there are no duplicate .so files at packaging time.
+          mkdir -p prebuilt/arm64-v8a
+          cp all_libs/libffnative.so prebuilt/arm64-v8a/
+          [ -f all_libs/libc++_shared.so ] && \
+            cp all_libs/libc++_shared.so prebuilt/arm64-v8a/ || true
+          echo "prebuilt/arm64-v8a contents:"
+          ls -lh prebuilt/arm64-v8a/
+
+      - name: Stage QNN runtime libraries and header stub
+        run: |
+          # qnnStage (a Gradle task in app/build.gradle.kts) checks for
+          # the QNN header and the six-tier runtime libraries before every
+          # build. On CI the Qualcomm SDK is absent, so we satisfy it by:
+          #   (a) copying the real QNN .so files from the upstream APK, and
+          #   (b) creating a one-line stub header (only its existence matters
+          #       at this stage; the content is compiled in libffnative.so).
+          JNI=work/android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p "$JNI"
+
+          for lib in libQnnHtp.so libQnnSystem.so; do
+            [ -f "all_libs/$lib" ] && cp "all_libs/$lib" "$JNI/" \
+              || echo "WARNING: $lib not found in upstream APK"
+          done
+
+          # Default tiers from work/android/app/build.gradle.kts:
+          # QNN_HTP_TIERS = "68 69 73 75 79 81"
+          for TIER in 68 69 73 75 79 81; do
+            for SUFFIX in Stub.so Skel.so; do
+              SRC="all_libs/libQnnHtpV${TIER}${SUFFIX}"
+              [ -f "$SRC" ] && cp "$SRC" "$JNI/" \
+                || echo "WARNING: libQnnHtpV${TIER}${SUFFIX} not in APK (tier may be absent)"
+            done
+          done
+
+          echo "jniLibs/arm64-v8a contents:"
+          ls -lh "$JNI/"
+
+          # Header stub: qnnStage checks file existence, not content.
+          INCL=work/android/app/src/main/cpp/include/QNN
+          mkdir -p "$INCL"
+          printf '/* CI presence stub — real header compiled into libffnative.so */\n' \
+            > "$INCL/QnnBackend.h"
+          echo "Stub header written."
+
+      # ── 7. Build ───────────────────────────────────────────────────────────
+      - name: Make gradlew executable
+        run: chmod +x work/android/gradlew
+
+      - name: Build debug APK
+        working-directory: work/android
+        run: |
+          ./gradlew :app:assembleDebug \
+            -PprebuiltNativeDir=../../prebuilt \
+            --no-daemon \
+            --stacktrace \
+            2>&1 | tee ../../build.log
+          # Confirm the APK was produced.
+          APK=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
+          if [ -z "$APK" ]; then
+            echo "ERROR: No APK found after build."
+            exit 1
+          fi
+          BYTES=$(wc -c < "$APK")
+          echo "APK produced: $APK ($BYTES bytes)"
+
+      # ── 8. Artifacts ───────────────────────────────────────────────────────
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: facefusion-debug-run${{ github.run_number }}
+          path: work/android/app/build/outputs/apk/debug/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-run${{ github.run_number }}
+          path: build.log
+          retention-days: 7
+          
